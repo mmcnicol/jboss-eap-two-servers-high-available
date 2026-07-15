@@ -36,10 +36,18 @@ case "$ROLE" in
     wait_for_port 127.0.0.1 9990
 
     # Idempotent: safe to re-run (skips steps already applied) if the container restarts.
-    "$JBOSS_HOME/bin/jboss-cli.sh" --connect controller=127.0.0.1:9990 \
-      --file=/opt/jboss/cli/configure-domain.cli
+    # Deliberately not fatal to the container: if this script has a bad resource
+    # address, we want master to stay up so you can `docker exec` in and debug
+    # with jboss-cli interactively, rather than the container dying outright.
+    if "$JBOSS_HOME/bin/jboss-cli.sh" --connect controller=127.0.0.1:9990 \
+      --file=/opt/jboss/cli/configure-domain.cli; then
+      touch /tmp/healthy
+    else
+      echo "WARNING: configure-domain.cli failed -- master will stay up for debugging," >&2
+      echo "but node1/node2 will not pass the depends_on healthcheck until it succeeds." >&2
+      echo "Debug with: docker exec -it wildfly-master \$JBOSS_HOME/bin/jboss-cli.sh --connect controller=127.0.0.1:9990" >&2
+    fi
 
-    touch /tmp/healthy
     wait "$DOMAIN_PID"
     ;;
 
