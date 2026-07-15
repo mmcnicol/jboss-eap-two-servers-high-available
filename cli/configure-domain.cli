@@ -20,6 +20,9 @@ end-if
 # instead. This is the undertow "mod-cluster" filter, not a modcluster subsystem.
 try
     /profile=load-balancer/subsystem=undertow/configuration=filter/mod-cluster=load-balancer:undefine-attribute(name=advertise-socket-binding)
+    # lb-server is already running by this point, so the change above only
+    # takes effect once it's reloaded.
+    /host=master/server-config=lb-server:reload(blocking=true)
 catch
     echo "WARNING: could not undefine advertise-socket-binding on /profile=load-balancer/subsystem=undertow/configuration=filter/mod-cluster=load-balancer"
 end-try
