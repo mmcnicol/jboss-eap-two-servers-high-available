@@ -1,0 +1,23 @@
+# Applied once against the domain controller (master) after its first boot.
+# Every step is guarded so re-running this script (e.g. after a container
+# restart) is a no-op where the change already exists.
+
+# 1. A server-group for the mod_cluster front end, using WildFly's built-in
+#    "load-balancer" profile (ships out of the box, no custom profile needed).
+if (outcome != success) of /server-group=lb-group:read-resource
+    /server-group=lb-group:add(profile=load-balancer, socket-binding-group=load-balancer-sockets)
+end-if
+
+# 2. Place one server from that group on the master host and start it. This is
+#    the process that listens on :8080 and load-balances across node1/node2.
+if (outcome != success) of /host=master/server-config=lb-server:read-resource
+    /host=master/server-config=lb-server:add(group=lb-group, auto-start=true, socket-binding-port-offset=0)
+    /host=master/server-config=lb-server:start(blocking=true)
+end-if
+
+# 3. Disable multicast advertising (unreliable/inconsistent across Docker
+#    networks) and wire the two sides together with a static address instead.
+/profile=load-balancer/subsystem=modcluster/mod-cluster-config=configuration:write-attribute(name=advertise, value=false)
+
+/profile=full-ha/subsystem=modcluster/mod-cluster-config=configuration:write-attribute(name=advertise, value=false)
+/profile=full-ha/subsystem=modcluster/mod-cluster-config=configuration:write-attribute(name=proxy-list, value=["master:8080"])

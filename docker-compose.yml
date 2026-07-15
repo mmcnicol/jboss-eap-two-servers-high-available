@@ -1,0 +1,66 @@
+services:
+  master:
+    build:
+      context: .
+      args:
+        WILDFLY_VERSION: ${WILDFLY_VERSION:-26.1.3.Final}
+    container_name: wildfly-master
+    hostname: master
+    environment:
+      ROLE: master
+      EAP_ADMIN_USER: ${EAP_ADMIN_USER:-admin}
+      EAP_ADMIN_PASSWORD: ${EAP_ADMIN_PASSWORD:?set EAP_ADMIN_PASSWORD in .env}
+      EAP_SLAVE_USER: ${EAP_SLAVE_USER:-slave}
+      EAP_SLAVE_PASSWORD: ${EAP_SLAVE_PASSWORD:?set EAP_SLAVE_PASSWORD in .env}
+    ports:
+      - "8080:8080"   # mod_cluster front end -- hit this for all app traffic
+      - "9990:9990"   # domain controller admin console
+    networks: [ha-domain]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 60s
+
+  node1:
+    build:
+      context: .
+      args:
+        WILDFLY_VERSION: ${WILDFLY_VERSION:-26.1.3.Final}
+    container_name: wildfly-node1
+    hostname: node1
+    environment:
+      ROLE: node1
+      EAP_SLAVE_USER: ${EAP_SLAVE_USER:-slave}
+      EAP_SLAVE_PASSWORD: ${EAP_SLAVE_PASSWORD:?set EAP_SLAVE_PASSWORD in .env}
+    ports:
+      - "8081:8080"   # direct access to node1, bypassing the LB (debug only)
+      - "9991:9990"
+    depends_on:
+      master:
+        condition: service_healthy
+    networks: [ha-domain]
+
+  node2:
+    build:
+      context: .
+      args:
+        WILDFLY_VERSION: ${WILDFLY_VERSION:-26.1.3.Final}
+    container_name: wildfly-node2
+    hostname: node2
+    environment:
+      ROLE: node2
+      EAP_SLAVE_USER: ${EAP_SLAVE_USER:-slave}
+      EAP_SLAVE_PASSWORD: ${EAP_SLAVE_PASSWORD:?set EAP_SLAVE_PASSWORD in .env}
+    ports:
+      - "8082:8080"   # direct access to node2, bypassing the LB (debug only)
+      - "9992:9990"
+    depends_on:
+      master:
+        condition: service_healthy
+    networks: [ha-domain]
+
+networks:
+  ha-domain:
+    driver: bridge
