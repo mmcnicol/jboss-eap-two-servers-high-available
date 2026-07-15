@@ -73,13 +73,13 @@ EAP once you have registry/zip access.
   (log in with `admin` / the `EAP_ADMIN_PASSWORD` you set)
 - **Direct node access** (bypasses the LB, useful for debugging):
   http://localhost:8081/ (node1), http://localhost:8082/ (node2)
-- **Confirm mod_cluster has registered both nodes**, via CLI:
-  ```
-  docker exec -it wildfly-master /opt/jboss/wildfly/bin/jboss-cli.sh \
-    --connect controller=127.0.0.1:9990 \
-    --commands="/host=master/server=lb-server/subsystem=modcluster/mod-cluster-config=configuration:list-proxy-info"
-  ```
-  You should see both `node1` and `node2` context entries listed as `OK`.
+- **Confirm mod_cluster has registered both nodes**: the most reliable check
+  is master's own log (`docker compose logs master` or `docker logs
+  wildfly-master`) -- registration produces a line per node containing
+  `MODCLUSTER000010` (node added) once node1/node2 join and their
+  `modcluster` subsystem registers with the front end. You can also check
+  the domain console's Runtime > Topology view at http://localhost:9990/ to
+  see `lb-server`, and node1/node2's `server-one`, all reporting as started.
 
 ## Testing failover / session replication / passivation
 

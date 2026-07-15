@@ -1,23 +1,47 @@
 # Applied once against the domain controller (master) after its first boot.
 # Every step is guarded so re-running this script (e.g. after a container
-# restart) is a no-op where the change already exists.
+# restart) is a no-op where the change already exists. Genuinely uncertain
+# writes are wrapped in try/catch so one wrong attribute name doesn't abort
+# the whole script -- check master's stdout for any WARNING lines.
 
-# 1. A server-group for the mod_cluster front end, using WildFly's built-in
-#    "load-balancer" profile (ships out of the box, no custom profile needed).
+# ===== Front end (master host): lb-group / lb-server =====
+
 if (outcome != success) of /server-group=lb-group:read-resource
     /server-group=lb-group:add(profile=load-balancer, socket-binding-group=load-balancer-sockets)
 end-if
 
-# 2. Place one server from that group on the master host and start it. This is
-#    the process that listens on :8080 and load-balances across node1/node2.
 if (outcome != success) of /host=master/server-config=lb-server:read-resource
     /host=master/server-config=lb-server:add(group=lb-group, auto-start=true, socket-binding-port-offset=0)
     /host=master/server-config=lb-server:start(blocking=true)
 end-if
 
-# 3. Disable multicast advertising (unreliable/inconsistent across Docker
-#    networks) and wire the two sides together with a static address instead.
-/profile=load-balancer/subsystem=modcluster/mod-cluster-config=configuration:write-attribute(name=advertise, value=false)
+# Stop the front end from multicast-advertising itself (unreliable across
+# Docker networks) -- app servers below are pointed at its static address
+# instead. This is the undertow "mod-cluster" filter, not a modcluster subsystem.
+try
+    /profile=load-balancer/subsystem=undertow/configuration=filter/mod-cluster=load-balancer:undefine-attribute(name=advertise-socket-binding)
+catch
+    echo "WARNING: could not undefine advertise-socket-binding on /profile=load-balancer/subsystem=undertow/configuration=filter/mod-cluster=load-balancer"
+end-try
 
-/profile=full-ha/subsystem=modcluster/mod-cluster-config=configuration:write-attribute(name=advertise, value=false)
-/profile=full-ha/subsystem=modcluster/mod-cluster-config=configuration:write-attribute(name=proxy-list, value=["master:8080"])
+# ===== App-server side (full-ha profile, used by other-server-group) =====
+
+# Static route to the front end's MCMP control channel: mcmp-management,
+# port 8090 in load-balancer-sockets. modcluster:5.0's "proxies" attribute
+# takes outbound-socket-binding *names*, not raw host:port strings, so we
+# define the binding first.
+if (outcome != success) of /socket-binding-group=full-ha-sockets/remote-destination-outbound-socket-binding=lb-proxy:read-resource
+    /socket-binding-group=full-ha-sockets/remote-destination-outbound-socket-binding=lb-proxy:add(host=master, port=8090)
+end-if
+
+try
+    /profile=full-ha/subsystem=modcluster/proxy=default:undefine-attribute(name=advertise-socket)
+catch
+    echo "WARNING: could not undefine advertise-socket on /profile=full-ha/subsystem=modcluster/proxy=default"
+end-try
+
+try
+    /profile=full-ha/subsystem=modcluster/proxy=default:write-attribute(name=proxies, value=["lb-proxy"])
+catch
+    echo "WARNING: could not set 'proxies' on /profile=full-ha/subsystem=modcluster/proxy=default -- check the attribute name/type against your actual domain.xml."
+end-try
