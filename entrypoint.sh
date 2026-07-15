@@ -60,7 +60,7 @@ case "$ROLE" in
       -Djboss.bind.address.management=0.0.0.0 \
       -Djboss.host.name="$ROLE" \
       -Djboss.domain.master.address=master \
-      -Djboss.domain.master.port=9999 \
+      -Djboss.domain.master.port=9990 \
       -Djboss.domain.master.username="$EAP_SLAVE_USER" \
       -Djboss.domain.master.password="$EAP_SLAVE_PASSWORD" \
       --host-config=host-slave.xml
