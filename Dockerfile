@@ -21,6 +21,17 @@ RUN curl -fL -o /tmp/wildfly.zip \
     && rm /tmp/wildfly.zip \
     && chown -R jboss:jboss ${JBOSS_HOME}
 
+# The shipped host-slave.xml sample defines TWO servers on one host
+# (server-one/main-server-group and server-two/other-server-group, the
+# latter with a port-offset so they can coexist on the same machine). We
+# want exactly one app server per node instead, in other-server-group
+# (full-ha profile), on the default ports -- so drop server-one and the
+# now-unneeded port offset on server-two.
+RUN sed -i \
+    -e '/<server name="server-one" group="main-server-group"\/>/d' \
+    -e '/<socket-bindings port-offset="150"\/>/d' \
+    ${JBOSS_HOME}/domain/configuration/host-slave.xml
+
 COPY cli/ /opt/jboss/cli/
 COPY entrypoint.sh /opt/jboss/entrypoint.sh
 

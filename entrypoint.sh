@@ -55,14 +55,41 @@ case "$ROLE" in
     : "${EAP_SLAVE_USER:=slave}"
     : "${EAP_SLAVE_PASSWORD:?EAP_SLAVE_PASSWORD must be set}"
 
+    # jboss.domain.master.username/password are NOT recognized properties in
+    # this WildFly Core version (verified against the actual jar -- they
+    # don't exist anywhere in wildfly-host-controller.jar). Domain-slave
+    # authentication is Elytron-based and needs a proper client config
+    # instead, matched by the master's hostname, forcing DIGEST-MD5 (the
+    # mechanism master's ManagementRealm actually offers).
+    cat > /tmp/wildfly-config.xml <<EOF
+<configuration>
+    <authentication-client xmlns="urn:elytron:client:1.7">
+        <authentication-rules>
+            <rule use-configuration="master-rule">
+                <match-host name="master"/>
+            </rule>
+        </authentication-rules>
+        <authentication-configurations>
+            <configuration name="master-rule">
+                <sasl-mechanism-selector selector="DIGEST-MD5"/>
+                <set-user-name name="$EAP_SLAVE_USER"/>
+                <credentials>
+                    <clear-password password="$EAP_SLAVE_PASSWORD"/>
+                </credentials>
+                <set-mechanism-realm name="ManagementRealm"/>
+            </configuration>
+        </authentication-configurations>
+    </authentication-client>
+</configuration>
+EOF
+
     exec "$JBOSS_HOME/bin/domain.sh" \
+      -Dwildfly.config.url=file:///tmp/wildfly-config.xml \
       -Djboss.bind.address=0.0.0.0 \
       -Djboss.bind.address.management=0.0.0.0 \
       -Djboss.host.name="$ROLE" \
       -Djboss.domain.master.address=master \
       -Djboss.domain.master.port=9990 \
-      -Djboss.domain.master.username="$EAP_SLAVE_USER" \
-      -Djboss.domain.master.password="$EAP_SLAVE_PASSWORD" \
       --host-config=host-slave.xml
     ;;
 

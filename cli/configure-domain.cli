@@ -6,6 +6,17 @@
 
 # ===== Front end (master host): lb-group / lb-server =====
 
+# Master's shipped host-master.xml only defines a "management" interface.
+# load-balancer-sockets' http/https bindings need a "public" interface too,
+# or lb-server's listeners have nothing to bind to (it boots "successfully"
+# but silently listens on nothing). Must run before lb-server exists/starts:
+# once a server in lb-group is live, adding this gets pushed out to it for
+# validation and fails as a duplicate (it's already inherited the bare name
+# from domain.xml's own interface declarations).
+if (outcome != success) of /host=master/interface=public:read-resource
+    /host=master/interface=public:add(inet-address=expression "${jboss.bind.address:127.0.0.1}")
+end-if
+
 if (outcome != success) of /server-group=lb-group:read-resource
     /server-group=lb-group:add(profile=load-balancer, socket-binding-group=load-balancer-sockets)
 end-if

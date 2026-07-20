@@ -73,13 +73,16 @@ EAP once you have registry/zip access.
   (log in with `admin` / the `EAP_ADMIN_PASSWORD` you set)
 - **Direct node access** (bypasses the LB, useful for debugging):
   http://localhost:8081/ (node1), http://localhost:8082/ (node2)
-- **Confirm mod_cluster has registered both nodes**: the most reliable check
-  is master's own log (`docker compose logs master` or `docker logs
-  wildfly-master`) -- registration produces a line per node containing
-  `MODCLUSTER000010` (node added) once node1/node2 join and their
-  `modcluster` subsystem registers with the front end. You can also check
-  the domain console's Runtime > Topology view at http://localhost:9990/ to
-  see `lb-server`, and node1/node2's `server-one`, all reporting as started.
+- **Confirm each node is actually up**: `curl http://localhost:8081/` and
+  `:8082/` (direct, bypassing the LB) should each return HTTP 200 (WildFly's
+  default welcome page). `curl http://localhost:8080/` (through the LB) is
+  expected to return **404**, not 200 -- that's mod_cluster/undertow itself
+  responding correctly, just with no application deployed yet. A connection
+  error or timeout on 8080 instead means the front end isn't actually
+  listening (see the interface note below).
+- The domain console's Runtime > Topology view at http://localhost:9990/
+  should show `lb-server` on the master host and `server-two` on both node1
+  and node2, all in the "started" state.
 
 ## Testing failover / session replication / passivation
 
@@ -105,7 +108,7 @@ locally:
    ```
    /profile=full-ha/subsystem=distributable-web/infinispan-session-management=default:write-attribute(name=granularity,value=SESSION)
    ```
-   and inspect `domain/servers/server-one/data/` inside node1/node2 for
+   and inspect `domain/servers/server-two/data/` inside node1/node2 for
    passivated session state, or watch server logs for passivation/activation
    log lines while idling a session past the timeout.
 
@@ -116,12 +119,45 @@ locally:
   a different WildFly release, or swap the Dockerfile's download step for a
   `COPY` of a real EAP zip later once you have Red Hat access -- the rest of
   this setup (host-master.xml/host-slave.xml, `full-ha`/`load-balancer`
-  profiles, the CLI script) carries over unchanged to real EAP 7.4.
+  profiles, the CLI script) carries over unchanged to real EAP 7.4, though
+  the specific gotchas below are version-specific and worth re-checking
+  against your actual EAP 7.4 install (they're all things we hit and fixed
+  against WildFly Core 18.1.2.Final / WildFly 26.1.3.Final specifically):
 - **Server-group names**: `other-server-group` (profile `full-ha`) is
   WildFly/EAP's out-of-the-box default for the second server group -- if
   your actual EAP domain.xml has been customized to use different names,
   update `other-server-group`/`full-ha` references in `cli/configure-domain.cli`
   and `entrypoint.sh` accordingly.
+- **Domain-slave authentication is Elytron-based, not property-based**: the
+  historically-documented `jboss.domain.master.username`/`.password` system
+  properties do not exist in this WildFly Core version (verified against the
+  actual jar -- they're not referenced anywhere in
+  `wildfly-host-controller.jar`). `entrypoint.sh` instead generates an
+  Elytron `wildfly-config.xml` client config at container startup (matched
+  by the master's hostname, forcing `DIGEST-MD5`, the mechanism
+  `ManagementRealm` actually offers) and passes it via
+  `-Dwildfly.config.url`. If your real EAP 7.4 turns out to still support the
+  old property-based approach, that's simpler -- try it first and fall back
+  to this if you hit `WFLYHC0043: Unable to connect due to authentication
+  failure` / `none of the mechanisms presented by the server ... are
+  supported`.
+- **`host-master.xml` is missing a `public` interface**: the shipped sample
+  only defines `management`. That's fine for a pure domain-controller host,
+  but we also run `lb-server` (an actual HTTP listener) on master, and
+  `load-balancer-sockets` needs a `public` interface to bind to. Without it,
+  `lb-server` reports `STARTED` with no error but silently listens on
+  nothing. `configure-domain.cli` adds it via CLI (must happen before
+  `lb-server` exists, or the change conflicts with the interface name
+  `lb-server` has already inherited from domain.xml).
+- **`host-slave.xml` defines two servers**: the shipped sample runs both
+  `server-one` (`main-server-group`) and `server-two` (`other-server-group`,
+  with a port-offset) on one host -- a demo of one host running two
+  differently-profiled servers. We want one app server per *host* instead
+  (node1 and node2 clustering with each other), so the Dockerfile strips the
+  `server-one` entry and the now-unneeded port-offset on `server-two` via
+  `sed`, for both node1 and node2 (both containers end up running a server
+  named `server-two`, which is fine -- server identity is the (host, server)
+  pair, not the name).
 - **Line endings**: if you edit `entrypoint.sh` or the `.cli` file on
   Windows, the Dockerfile strips `\r` automatically during build, so CRLF
   saves won't break it.
