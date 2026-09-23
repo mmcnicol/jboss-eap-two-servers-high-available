@@ -41,13 +41,21 @@ stores CDI `@ViewScoped` beans, `@SessionScoped` beans and other session
 attributes separately in the session. Patient data held in backing beans lives
 there, and the setting won't check it.
 
-This filter runs after each request. It serializes every session attribute and
-logs any failure with a marker that is easy to grep for:
+This filter runs after each request. For every session attribute it:
+
+1. **writes** it with `ObjectOutputStream` (the same thing replication and
+   passivation do), then
+2. **reads it back** with `ObjectInputStream` (the same thing activation and
+   failover do on the other node).
+
+Any failure is logged once per attribute, step and exception type, with a marker
+that is easy to grep for:
 
 ```java
 @WebFilter("/*")
 public class SessionSerializationCheckFilter implements Filter {
     private static final Logger LOG = Logger.getLogger(SessionSerializationCheckFilter.class);
+    private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
 
     @Override
     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
@@ -60,16 +68,57 @@ public class SessionSerializationCheckFilter implements Filter {
             if (session != null) {
                 try {
                     for (String name : Collections.list(session.getAttributeNames())) {
-                        try (ObjectOutputStream out = new ObjectOutputStream(OutputStream.nullOutputStream())) {
-                            out.writeObject(session.getAttribute(name));
-                        } catch (IOException e) {
-                            LOG.warnf("SESSION-SERIALIZATION-FAILURE attribute=%s uri=%s: %s",
-                                    name, httpReq.getRequestURI(), e);
-                        }
+                        check(name, session.getAttribute(name), httpReq.getRequestURI());
                     }
                 } catch (IllegalStateException invalidated) {
                     // session was invalidated during the request (e.g. logout)
                 }
+            }
+        }
+    }
+
+    private void check(String name, Object value, String uri) {
+        byte[] bytes;
+        try {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (ObjectOutputStream out = new ObjectOutputStream(buffer)) {
+                out.writeObject(value);
+            }
+            bytes = buffer.toByteArray();
+        } catch (IOException | RuntimeException e) {
+            // RuntimeException: e.g. Hibernate LazyInitializationException from a
+            // detached entity in the session - log it, don't fail the request
+            report("write", name, uri, e);
+            return;
+        }
+        try (ObjectInputStream in = new DeploymentObjectInputStream(new ByteArrayInputStream(bytes))) {
+            in.readObject();
+        } catch (IOException | ClassNotFoundException | RuntimeException e) {
+            // e.g. InvalidObjectException caused by Weld UnproxyableResolutionException,
+            // InvalidClassException, or a readObject()/readResolve() that fails
+            report("read", name, uri, e);
+        }
+    }
+
+    private void report(String step, String name, String uri, Exception e) {
+        if (REPORTED.add(step + "|" + name + "|" + e.getClass().getName())) {
+            LOG.warnf(e, "SESSION-SERIALIZATION-FAILURE step=%s attribute=%s uri=%s: %s",
+                    step, name, uri, e);
+        }
+    }
+
+    /** Resolves classes with the deployment's class loader, as the session manager does. */
+    private static final class DeploymentObjectInputStream extends ObjectInputStream {
+        DeploymentObjectInputStream(InputStream in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        protected Class<?> resolveClass(ObjectStreamClass desc) throws IOException, ClassNotFoundException {
+            try {
+                return Class.forName(desc.getName(), false, Thread.currentThread().getContextClassLoader());
+            } catch (ClassNotFoundException e) {
+                return super.resolveClass(desc);
             }
         }
     }
@@ -78,10 +127,30 @@ public class SessionSerializationCheckFilter implements Filter {
 
 - Weld stores CDI session-scoped and view-scoped beans as session attributes,
   so the filter covers them.
-- `OutputStream.nullOutputStream()` needs Java 11. On Java 8, use a small
-  no-op `OutputStream` instead.
-- The filter adds overhead on every request, so keep it on the test branch
-  only.
+- Failures are reported **once** per step, attribute and exception type until
+  the server restarts, to keep the log readable. Restart JBoss before each test
+  run to get a fresh list. The `uri=` is the first page where each problem
+  appeared.
+- Writing and reading every attribute on every request costs CPU and memory, so
+  keep the filter on the test branch only.
+- **`step=write` failures** are problems replication and passivation would hit.
+  For example, a Hibernate
+  `LazyInitializationException ... could not initialize proxy - no Session`
+  means a JPA entity with an uninitialized lazy association is held in the
+  session. Replication and passivation walk the same object graph, and the
+  entity is detached on the other node anyway. Store IDs or DTOs instead, or
+  fetch the needed associations before keeping the entity.
+- **`step=read` failures** are problems activation and failover would hit. For
+  example, `InvalidObjectException` caused by Weld's
+  `UnproxyableResolutionException`: Weld resolves CDI proxies again when they
+  are read back and fails if the bean class can't be proxied. The Weld
+  message (`WELD-00xxxx`) names the class and the reason: typically no
+  non-private no-argument constructor, a `final` class or public method, or a
+  normal-scoped producer returning a final type.
+- The read-back only proves the objects can be deserialized. It does **not**
+  catch `transient` fields that come back `null` and are never rebuilt, or JSF
+  views that can't be restored because component IDs changed. Those still need
+  the passivation test in section 6.
 
 ## 3. Get the exact field that failed
 
@@ -110,10 +179,10 @@ stage('Check session serialization') {
     steps {
         sh '''
             docker compose logs --no-color jboss > jboss-console.log || true
-            grep -E 'NotSerializableException|InvalidClassException|WriteAbortedException|SESSION-SERIALIZATION-FAILURE' \
+            grep -E 'NotSerializableException|InvalidClassException|InvalidObjectException|WriteAbortedException|LazyInitializationException|UnproxyableResolutionException|SESSION-SERIALIZATION-FAILURE' \
                  server.log* jboss-console.log > serialization-errors.txt || true
             echo "Distinct failures:"
-            grep -oE 'NotSerializableException: [^ ]+|SESSION-SERIALIZATION-FAILURE attribute=[^ ]+' \
+            grep -oE 'NotSerializableException: [^ ]+|SESSION-SERIALIZATION-FAILURE step=[^ ]+ attribute=[^ ]+' \
                  serialization-errors.txt | sort | uniq -c || true
         '''
         script {
@@ -137,9 +206,9 @@ clean result might only mean the check never ran.
 
 ## 6. What this does and doesn't prove
 
-**It proves** that the pages the Selenium tests visit only put serializable
-objects in the view state and the session. CI is the cheapest place to find
-these problems.
+**It proves** that the pages the Selenium tests visit only put objects in the
+view state and the session that can be written and read back. CI is the
+cheapest place to find these problems.
 
 **It doesn't cover:**
 
@@ -150,6 +219,32 @@ these problems.
   failover still need testing in UAT, because the compose setup runs a single
   JBoss. The compose file could later run two JBoss nodes behind a load
   balancer, the way this demo project does.
+- `transient` fields that come back `null` after a restore, and JSF views that
+  can't be restored because component IDs changed.
+
+### Single-node passivation test (covers the last point)
+
+This forces one JBoss to passivate a session and restore it, with no second
+node needed:
+
+1. Check `web.xml` has `<distributable/>`. Without it, `max-active-sessions`
+   doesn't passivate: a new login fails or the older session is discarded.
+2. Set `<max-active-sessions>1</max-active-sessions>` in `jboss-web.xml` (local
+   test only).
+3. Check the server has a passivation store: `/subsystem=distributable-web:read-resource(recursive=true)`
+   should show `infinispan-session-management` using the `web` cache container,
+   and `/subsystem=infinispan/cache-container=web:read-resource(recursive=true)`
+   should show a `file-store`. EAP 7.4's default configuration has both. If it
+   shows `hotrod-session-management` instead, sessions live in the remote Data
+   Grid and behave differently.
+4. **Browser A:** log in, go to a page with the generated-ID fix or with
+   `transient` fields, and part-fill a form.
+5. **Browser B:** log in as a **different user** (the same username can trigger
+   the app's duplicate-login logic). Browser A's session is passivated.
+   `/deployment=YOUR-APP.war/subsystem=undertow:read-attribute(name=active-sessions)`
+   should show 1.
+6. **Browser A:** submit the form, sort, open patient data. Look for errors,
+   `NullPointerException`s, empty patient data, or being logged out.
 
 ## 7. Before merging to main
 
