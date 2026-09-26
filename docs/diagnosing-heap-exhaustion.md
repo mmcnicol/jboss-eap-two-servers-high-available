@@ -6,7 +6,8 @@ load, and how to size the heap for HTTP sessions.
 
 See also: [HA session replication test plan](ha-session-replication-test-plan.md),
 [Creating lots of user sessions](creating-test-sessions.md), and the polling
-script [`scripts/poll-sessions.sh`](../scripts/poll-sessions.sh).
+scripts [`scripts/poll-sessions.sh`](../scripts/poll-sessions.sh) and
+[`scripts/poll-sessions.ps1`](../scripts/poll-sessions.ps1) (Windows).
 
 ## Read the heap trend first
 
@@ -54,6 +55,18 @@ holds, so treat it as sensitive.
 export JBOSS_MGMT_USER=monitor-user JBOSS_MGMT_PASS='...'
 scripts/poll-sessions.sh -c dc-host:9990 -d app.war -h node1,node2 -s server-one -i 30 > sessions.csv
 ```
+
+On Windows, use the PowerShell version (Windows PowerShell 5.1 or PowerShell
+7). It prompts for the management user's credentials unless
+`JBOSS_MGMT_USER` and `JBOSS_MGMT_PASS` are set:
+
+```powershell
+.\scripts\poll-sessions.ps1 -Controller dc-host:9990 -Deployment app.war -Hosts node1,node2 -Server server-one -IntervalSeconds 30 -OutFile sessions.csv
+```
+
+If Windows blocks the script because it was downloaded, run
+`Unblock-File .\scripts\poll-sessions.ps1` once, or start it with
+`powershell -ExecutionPolicy Bypass -File .\scripts\poll-sessions.ps1 ...`.
 
 It records, per node: active sessions, sessions created, expired and rejected
 sessions, the highest session count, and heap used and max. The key column is
