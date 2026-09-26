@@ -52,7 +52,7 @@ To bring the two in line:
 2. In k6, take `javax.faces.ViewState` from every response and send it with the
    next POST. AJAX requests also need the `Faces-Request: partial/ajax` header
    and the `javax.faces.partial.*` parameters.
-3. Check page **content**, such as the patient name or a logout link, not just
+3. Check page **content**, such as a customer name or a logout link, not just
    the status code.
 4. **Calibrate:** create around 50 sessions with Selenium and 50 with k6, then
    compare the average session size. If k6's sessions are much smaller, the
@@ -90,7 +90,7 @@ export default function () {
     'javax.faces.ViewState': viewState(res),
   });
   check(res, { 'logged in': (r) => r.body.includes('Logout') });
-  // patient quick search, then patient-context pages,
+  // search for a customer, then pages for that customer,
   // each POST using viewState() from the previous response
 }
 ```
@@ -108,7 +108,7 @@ export default function () {
   caches.
 - **Ask for bulk test accounts in UAT**, e.g. 200–1,000 users, and cycle through
   them as in `users.json` above.
-- **Vary the patients too.** If every session searches for the same patient, the
+- **Vary the records too.** If every session searches for the same customer, the
   Data Grid hit rate is 100%. That understates the load on the Data Grid and
   the external APIs.
 
@@ -123,7 +123,7 @@ tier:
 | Tier | How | Use it to test |
 | --- | --- | --- |
 | 1. Empty sessions | GET the login page only | Session-count limits and passivation triggering, quickly; the baseline memory per session |
-| 2. Full sessions | k6: login → patient search → 3–5 patient-context pages | Realistic memory, replication volume, and serialization errors |
+| 2. Full sessions | k6: login → search → 3–5 pages for the selected customer | Realistic memory, replication volume, and serialization errors |
 | 3. Realistic sessions | A few Selenium browsers | Checking that the k6 sessions are realistic |
 
 Tier 2 is what matters for HA.

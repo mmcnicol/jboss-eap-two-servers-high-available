@@ -8,7 +8,7 @@ cause of broken session replication and passivation. The plan:
 2. Turn on `javax.faces.SERIALIZE_SERVER_STATE=true` and add a test-only
    session serialization filter.
 3. Run the existing Selenium UI tests in the Jenkins job for that branch. The
-   job starts JBoss, SQL Server, DataGrid etc. with `docker compose up`.
+   job starts JBoss, the database, the DataGrid etc. with `docker compose up`.
 4. Add a Jenkins step that greps the JBoss server log for serialization
    failures.
 
@@ -38,8 +38,8 @@ Add this to `web.xml` on the branch:
 
 `SERIALIZE_SERVER_STATE` only covers the **JSF component tree state**. Mojarra
 stores CDI `@ViewScoped` beans, `@SessionScoped` beans and other session
-attributes separately in the session. Patient data held in backing beans lives
-there, and the setting won't check it.
+attributes separately in the session. Application data held in backing beans
+lives there, and the setting won't check it.
 
 This filter runs after each request. For every session attribute it:
 
@@ -52,6 +52,28 @@ Any failure is logged once per attribute, step and exception type, with a marker
 that is easy to grep for:
 
 ```java
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.ObjectStreamClass;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.annotation.WebFilter;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
+
+import org.jboss.logging.Logger;
+
 @WebFilter("/*")
 public class SessionSerializationCheckFilter implements Filter {
     private static final Logger LOG = Logger.getLogger(SessionSerializationCheckFilter.class);
@@ -162,7 +184,7 @@ Add this to the JBoss `JAVA_OPTS` in the compose file:
 
 A plain `NotSerializableException` only names the class. With this flag, the
 message includes the whole path to the field, e.g.
-`PatientViewBean.client -> RestClientImpl.connection`, which makes each failure
+`CustomerViewBean.client -> RestClientImpl.connection`, which makes each failure
 much quicker to fix.
 
 ## 4. Jenkins grep step
@@ -240,11 +262,11 @@ node needed:
 4. **Browser A:** log in, go to a page with the generated-ID fix or with
    `transient` fields, and part-fill a form.
 5. **Browser B:** log in as a **different user** (the same username can trigger
-   the app's duplicate-login logic). Browser A's session is passivated.
+   any duplicate-login handling in the app). Browser A's session is passivated.
    `/deployment=YOUR-APP.war/subsystem=undertow:read-attribute(name=active-sessions)`
    should show 1.
-6. **Browser A:** submit the form, sort, open patient data. Look for errors,
-   `NullPointerException`s, empty patient data, or being logged out.
+6. **Browser A:** submit the form, sort, open record details. Look for errors,
+   `NullPointerException`s, empty data, or being logged out.
 
 ## 7. Before merging to main
 

@@ -71,32 +71,33 @@ disappearing.
       `numberOfViewsInSession` (default 15 each) are reviewed, since they
       multiply the stored view state.
 
-## Patient data in backing beans and the DataGrid
+## Personal data in backing beans and the DataGrid
 
-The DataGrid is a remote Red Hat Data Grid cluster, so its cache survives a
-JBoss node failover. The risk moves to the Data Grid cluster itself.
+How the DataGrid is deployed decides what happens to the cache on failover, so
+confirm it first.
 
 | DataGrid mode | What happens after failover | What to test |
 | --- | --- | --- |
+| Embedded, local cache per node | The surviving node's cache is empty | A burst of external API calls and a latency spike; external API rate limits |
+| Embedded, replicated or distributed | The cache survives | Extra JGroups traffic on the same network as session replication |
 | Remote (Hot Rod to a separate cluster) | The cache survives | Behaviour when the Data Grid is slow or unavailable |
 
-- [ ] DataGrid mode confirmed: remote Red Hat Data Grid, a separate 2-node HA
-      cluster reached over Hot Rod (Red Hat advised against the Infinispan
-      embedded in EAP). Use the Remote row above.
-- [ ] Data Grid failover tested: stop one Data Grid node under load and confirm
+- [ ] DataGrid mode confirmed with the developers, and the matching row above
+      used for testing.
+- [ ] If the Data Grid is a remote cluster, its failover is tested: stop one Data Grid node under load and confirm
       the Hot Rod client switches to the other with no errors; then stop both
       and confirm the app degrades gracefully (timeouts, fallback to the
       external API) instead of hanging.
-- [ ] Backing beans hold keys (e.g. patient ID) and look data up in the
-      DataGrid, rather than holding copies of large patient objects that are
+- [ ] Backing beans hold keys (e.g. a customer ID) and look data up in the
+      DataGrid, rather than holding copies of large domain objects that are
       replicated on every request.
 - [ ] Cache freshness is defined: whether node 1 and node 2 can show different
-      versions of the same patient, and what invalidates an entry.
-- [ ] Data protection reviewed. Passivation writes patient data unencrypted to
+      versions of the same record, and what invalidates an entry.
+- [ ] Data protection reviewed. Passivation writes personal data unencrypted to
       disk on the app servers, and JGroups sends it in clear text by default.
       Check the store location, file permissions and cleanup, and whether
       cluster traffic needs `SYM_ENCRYPT`/`ASYM_ENCRYPT` or an isolated network.
-- [ ] It is known whether UAT holds real, realistic or anonymised patient data.
+- [ ] It is known whether UAT holds real, realistic or anonymised personal data.
 
 ## Load balancer (mod_cluster) checks
 
@@ -141,8 +142,8 @@ of the traffic afterwards.
 - [ ] Think times are realistic. Session count depends on users and the session
       timeout, not only requests per second.
 - [ ] Heap is sized for one node holding **every** session (each node keeps a
-      copy with 2 owners). Rough sizing: concurrent sessions × session size.
-      The Data Grid is remote, so its cache is not in the JBoss heap.
+      copy with 2 owners). Rough sizing: concurrent sessions × session size,
+      plus any embedded DataGrid cache or Hot Rod near cache.
 - [ ] `max-active-sessions` is set to the sized value, not the low
       passivation-test value.
 - [ ] A node is failed during the steady-state phase. Error rate, p95/p99
